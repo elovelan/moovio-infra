@@ -35,7 +35,7 @@
 : "${PROFILE_GOTEST:=}"              # Per-package CPU/mem profiling.
 : "${SKIP_SUBMODULE_TESTS:=}"        # Skip tests in nested go.mod submodules.
 : "${VENDOR_FOR_TESTS:=}"            # Run go mod tidy + vendor before tests.
-: "${EXPERIMENTAL:=}"                # Opt-in to experimental features: 
+: "${EXPERIMENTAL:=}"                # Opt-in to experimental features:
                                      #   linters: gitleaks (moov-io only), govulncheck,
                                      #            sqlvet, xmlencoderclose, nilaway
                                      #   go test: shuffle, parallel
@@ -79,7 +79,7 @@ main() {
     setup_environment
     collect_go_metadata
     setup_build_test_flags
-    
+
     if [[ $SKIP_LINTERS ]]; then
         echo "SKIPPING linters for $OS_NAME"
     else
@@ -173,7 +173,7 @@ maybe_run_golangci_lint() {
 }
 
 check_retracted_modules() {
-    # Verify no retracted module versions are in the build.  
+    # Verify no retracted module versions are in the build.
     retracted_mods=($(go list -m -u all | grep retracted | cut -f1 -d' '))
     for dep in "${retracted_mods[@]}"
     do
@@ -212,7 +212,7 @@ build_source() {
 # === Linters phase ===
 
 run_linters() {
-    if [[ $org == "moov-io" && $EXPERIMENTAL == *gitleaks* && -z $DISABLE_GITLEAKS]]; then
+    if [[ $org == "moov-io" && $EXPERIMENTAL == *gitleaks* && -z $DISABLE_GITLEAKS ]]; then
         run_gitleaks
     fi
 
@@ -239,7 +239,7 @@ run_linters() {
 # gitleaks (secret scanning, in-progress of a rollout).
 run_gitleaks() {
     [[ $OS_NAME == "windows" ]] && return
-    
+
     wget -q -O gitleaks.tar.gz https://github.com/zricethezav/gitleaks/releases/download/v"$gitleaks_version"/gitleaks_"$gitleaks_version"_"$UNAME"_x64.tar.gz
     tar xf gitleaks.tar.gz gitleaks
     mv gitleaks ./bin/gitleaks
@@ -334,21 +334,11 @@ run_nilaway() {
     # Find nilaway on PATH.
     local bin=$(resolve_go_tool nilaway)
 
-    nilaway_memory_limit="7168MiB"
-    if [[ "$NILAWAY_MEMORY_LIMIT" != "" ]]; then
-        nilaway_memory_limit="$NILAWAY_MEMORY_LIMIT"
-    fi
-
-    nilaway_packages="./..."
-    if [[ "$NILAWAY_PACKAGES" != "" ]]; then
-        nilaway_packages="$NILAWAY_PACKAGES"
-    fi
-
     # Run nilaway.
     if [[ $bin != "" ]];
     then
-        echo "Running nilaway with GOMEMLIMIT=""$nilaway_memory_limit"" in ""$nilaway_packages"
-        GOMEMLIMIT="$nilaway_memory_limit" time "$bin" -test=false "$nilaway_packages"
+        echo "Running nilaway with GOMEMLIMIT=""$NILAWAY_MEMORY_LIMIT"" in ""$NILAWAY_PACKAGES"
+        GOMEMLIMIT="$NILAWAY_MEMORY_LIMIT" time "$bin" -test=false "$NILAWAY_PACKAGES"
         echo "FINISHED nilaway check"
     fi
 }
@@ -359,7 +349,7 @@ run_golangci_lint() {
     then
         STRICT_GOLANGCI_LINTERS=${STRICT_GOLANGCI_LINTERS:="yes"}
     fi
-   
+
     echo "STARTING golangci-lint checks"
 
     # Download golangci-lint.
@@ -371,7 +361,7 @@ run_golangci_lint() {
     if [[ $GOLANGCI_DO_FIX == "true" ]]; then
         GOLANGCI_FIX_FLAG="--fix"
     fi
-    
+
     local golangci_lint_cmd_common=(
         ./bin/golangci-lint "$GOLANGCI_FLAGS" run "$GOLANGCI_FIX_FLAG"
         --verbose --timeout=5m "$GOLANGCI_TAGS"
@@ -388,7 +378,7 @@ run_golangci_lint() {
 
         local -a enable_disable_args
         set_golangci_enable_disable_args enable_disable_args
-        
+
         "${golangci_lint_cmd_common[@]}" --config="$configFilepath" "${enable_disable_args[@]}"
 
         # Cleanup generated config (the EXIT trap is the safety net for failure)
@@ -400,7 +390,7 @@ run_golangci_lint() {
 }
 
 set_golangci_enable_disable_args() {
-    local -n enable_disable_args="$1"
+    local -n out="$1"
 
     # Build the linters list.
     # TODO(adam): re-add unused when they fix some bugs.
@@ -431,7 +421,7 @@ set_golangci_enable_disable_args() {
         disabled="$disabled,$DISABLED_GOLANGCI_LINTERS"
     fi
 
-    enable_disable_args=( "--enable=$enabled" "--disable=$disabled" )
+    out=( "--enable=$enabled" "--disable=$disabled" )
 }
 
 # emit_golangci_config writes the dynamic golangci-lint config to
@@ -545,11 +535,7 @@ run_tests() {
     GOARCH=''
     GOOS=''
 
-    gotest_packages="./..."
-    if [ -n "$GOTEST_PKGS" ];
-    then
-        gotest_packages="$GOTEST_PKGS"
-    fi
+    gotest_packages="$GOTEST_PKGS"
 
     coveredStatements=0
     maximumCoverage=0
