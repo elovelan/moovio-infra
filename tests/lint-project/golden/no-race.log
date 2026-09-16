@@ -1,8 +1,0 @@
-[/] go list .
-[/] go list ./...
-[/] go version
-[/] go mod why
-[/] go list -m all
-[/] go list -m -u all
-[/] go test ./... '' -coverprofile=<TMPDIR>/coverage.txt -covermode=atomic -count 1
-exit=0

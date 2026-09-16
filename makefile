@@ -24,5 +24,5 @@ test-docker:
 
 .PHONY: test-shell
 test-shell:
-	shellcheck ./go/lint-project.sh ./tests/lint-project/run.sh ./tests/lint-project/stubs/*
-	./tests/lint-project/run.sh
+	shellcheck ./go/lint-project.sh ./tests/lint-project_test.sh
+	./tests/lint-project_test.sh
