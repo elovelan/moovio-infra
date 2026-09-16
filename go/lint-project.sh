@@ -17,6 +17,34 @@ fi
 
 mkdir -p ./bin/
 
+# Download a release tarball containing a single binary named $name and
+# place it at ./bin/$name.
+download_tool() {
+    local name="$1" url="$2"
+
+    wget -q -O "$name.tar.gz" "$url"
+    tar xf "$name.tar.gz" "$name"
+    mv "$name" "./bin/$name"
+}
+
+# Print the path of a Go tool installed with 'go install'. PATH is checked
+# first, then the public GitHub runner and Moov hosted runner bin directories
+# (which may not be on PATH) take precedence when present. Prints nothing if
+# the tool cannot be found.
+find_go_tool() {
+    local name="$1" bin="" candidate
+
+    if command -v "$name" > /dev/null 2>&1; then
+        bin=$(command -v "$name")
+    fi
+    for candidate in "/home/runner/go/bin/$name" "/home/actions/bin/$name"; do
+        if [[ -f "$candidate" ]]; then
+            bin="$candidate"
+        fi
+    done
+    echo "$bin"
+}
+
 # Collect all our files for processing
 MODNAME=$(go list .)
 GOPKGS=($(go list ./...))
@@ -144,11 +172,9 @@ if [[ "$DISABLE_GITLEAKS" != "" ]]; then
     run_gitleaks=false
 fi
 if [[ "$run_gitleaks" == "true" ]]; then
-    wget -q -O gitleaks.tar.gz https://github.com/zricethezav/gitleaks/releases/download/v"$gitleaks_version"/gitleaks_"$gitleaks_version"_"$UNAME"_x64.tar.gz
-    tar xf gitleaks.tar.gz gitleaks
-    mv gitleaks ./bin/gitleaks
+    download_tool gitleaks "https://github.com/zricethezav/gitleaks/releases/download/v${gitleaks_version}/gitleaks_${gitleaks_version}_${UNAME}_x64.tar.gz"
 
-    echo "gitleaks version: "$(./bin/gitleaks version)
+    echo "gitleaks version: $(./bin/gitleaks version)"
 
     # Find directories and optionally exclude one
     if [ -n "$GITLEAKS_EXCLUDE" ]; then
@@ -184,27 +210,8 @@ if [[ "$run_govulncheck" == "true" ]]; then
 
     # Install the latest govulncheck release
     go install golang.org/x/vuln/cmd/govulncheck@latest
+    bin=$(find_go_tool govulncheck)
 
-    # Find govulncheck
-    bin=""
-    if command -v govulncheck > /dev/null 2>&1;
-    then
-        bin=$(command -v govulncheck)
-    fi
-    # Public Github runners path
-    actions_path="/home/runner/go/bin/govulncheck"
-    if [[ -f "$actions_path" ]];
-    then
-        bin="$actions_path"
-    fi
-    # Moov hosted runner paths
-    actions_path="/home/actions/bin/govulncheck"
-    if [[ -f "$actions_path" ]];
-    then
-        bin="$actions_path"
-    fi
-
-    # Run govulncheck
     if [[ "$bin" != "" ]];
     then
         "$bin" -test ./...
@@ -225,12 +232,13 @@ fi
 if [[ "$run_sqlvet" == "true" ]]; then
     # Download only on linux or macOS
     if [[ "$OS_NAME" != "windows" ]]; then
-        if [[ "$OS_NAME" == "linux" ]]; then wget -q -O sqlvet.tar.gz https://github.com/houqp/sqlvet/releases/download/"$sqlvet_version"/sqlvet-"$sqlvet_version"-linux-amd64.tar.gz; fi
-        if [[ "$OS_NAME" == "osx" ]]; then wget -q -O sqlvet.tar.gz https://github.com/houqp/sqlvet/releases/download/"$sqlvet_version"/sqlvet-"$sqlvet_version"-darwin-amd64.tar.gz; fi
-        tar xf sqlvet.tar.gz sqlvet
-        mv sqlvet ./bin/sqlvet
+        sqlvet_os="$OS_NAME"
+        if [[ "$OS_NAME" == "osx" ]]; then
+            sqlvet_os="darwin"
+        fi
+        download_tool sqlvet "https://github.com/houqp/sqlvet/releases/download/${sqlvet_version}/sqlvet-${sqlvet_version}-${sqlvet_os}-amd64.tar.gz"
 
-        echo "sqlvet version: "$(./bin/sqlvet --version)
+        echo "sqlvet version: $(./bin/sqlvet --version)"
         ./bin/sqlvet .
         echo "FINISHED sqlvet check"
     else
@@ -254,27 +262,8 @@ if [[ "$run_xmlencoderclose" == "true" ]]; then
 
     # Install xmlencoderclose
     go install github.com/adamdecaf/xmlencoderclose@latest
+    bin=$(find_go_tool xmlencoderclose)
 
-    # Find the linter
-    bin=""
-    if command -v xmlencoderclose > /dev/null 2>&1;
-    then
-        bin=$(command -v xmlencoderclose)
-    fi
-    # Public Github runners path
-    actions_path="/home/runner/go/bin/xmlencoderclose"
-    if [[ -f "$actions_path" ]];
-    then
-        bin="$actions_path"
-    fi
-    # Moov hosted runner paths
-    actions_path="/home/actions/bin/xmlencoderclose"
-    if [[ -f "$actions_path" ]];
-    then
-        bin="$actions_path"
-    fi
-
-    # Run xmlencoderclose
     if [[ "$bin" != "" ]];
     then
         "$bin" -test ./...
@@ -303,42 +292,14 @@ then
 
     # Install nilaway
     go install go.uber.org/nilaway/cmd/nilaway@latest
+    bin=$(find_go_tool nilaway)
 
-    # Find nilaway on PATH
-    bin=""
-    if command -v nilaway > /dev/null 2>&1;
-    then
-        bin=$(command -v nilaway)
-    fi
+    nilaway_memory_limit="${NILAWAY_MEMORY_LIMIT:-7168MiB}"
+    nilaway_packages="${NILAWAY_PACKAGES:-./...}"
 
-    # Public Github runners path
-    actions_path="/home/runner/go/bin/nilaway"
-    if [[ -f "$actions_path" ]];
-    then
-        bin="$actions_path"
-    fi
-
-    # Moov hosted runner paths
-    actions_path="/home/actions/bin/nilaway"
-    if [[ -f "$actions_path" ]];
-    then
-        bin="$actions_path"
-    fi
-
-    nilaway_memory_limit="7168MiB"
-    if [[ "$NILAWAY_MEMORY_LIMIT" != "" ]]; then
-        nilaway_memory_limit="$NILAWAY_MEMORY_LIMIT"
-    fi
-
-    nilaway_packages="./..."
-    if [[ "$NILAWAY_PACKAGES" != "" ]]; then
-        nilaway_packages="$NILAWAY_PACKAGES"
-    fi
-
-    # Run nilaway
     if [[ "$bin" != "" ]];
     then
-        echo "Running nilaway with GOMEMLIMIT=""$nilaway_memory_limit"" in ""$nilaway_packages"
+        echo "Running nilaway with GOMEMLIMIT=$nilaway_memory_limit in $nilaway_packages"
         GOMEMLIMIT="$nilaway_memory_limit" time "$bin" -test=false "$nilaway_packages"
         echo "FINISHED nilaway check"
     fi
