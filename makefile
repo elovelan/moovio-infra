@@ -22,5 +22,9 @@ test: check test-docker
 test-docker:
 	@go run ./cmd/dockertest
 
+.PHONY: test-lint-project
+test-lint-project:
+	./go/lint-project_test.sh
+
 test-shell:
-	shellcheck ./go/lint-project.sh
+	shellcheck ./go/lint-project.sh ./go/lint-project_test.sh
