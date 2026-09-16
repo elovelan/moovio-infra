@@ -8,13 +8,6 @@ sqlvet_version=v1.1.5
 # Additional flags for the golangci-lint run command (set by callers)
 GOLANGCI_FLAGS="${GOLANGCI_FLAGS:-}"
 
-# Set these to any non-blank value to disable the linter
-disable_golangci=""
-if [[ "$SKIP_GOLANGCI" != "" ]];
-then
-    disable_golangci="$SKIP_GOLANGCI"
-fi
-
 mkdir -p ./bin/
 
 # Download a release tarball containing a single binary named $name and
@@ -43,6 +36,26 @@ find_go_tool() {
         fi
     done
     echo "$bin"
+}
+
+# Decide whether the named check runs. It is enabled when its default is
+# "true" or when it is listed in EXPERIMENTAL, and always disabled when
+# SKIP_LINTERS or DISABLE_<NAME> (upper-cased) is set to a non-blank value.
+should_run() {
+    local name="$1" enabled="$2" disable_var
+
+    if [[ "$EXPERIMENTAL" == *"$name"* ]]; then
+        enabled=true
+    fi
+    if [[ "$SKIP_LINTERS" != "" ]]; then
+        enabled=false
+    fi
+    disable_var="DISABLE_$(echo "$name" | tr '[:lower:]' '[:upper:]')"
+    if [[ "${!disable_var}" != "" ]]; then
+        enabled=false
+    fi
+
+    [[ "$enabled" == "true" ]]
 }
 
 # Collect all our files for processing
@@ -155,23 +168,12 @@ if [[ "$SKIP_LINTERS" == "" && "$ONLY_GOLANGCI" != "yes" ]]; then
 fi
 
 # gitleaks (secret scanning, in-progress of a rollout)
-run_gitleaks=true
-if [[ "$OS_NAME" == "windows" ]]; then
-    run_gitleaks=false
+# On by default for moov-io projects (except Windows), opt-in elsewhere.
+gitleaks_default=true
+if [[ "$OS_NAME" == "windows" || "$org" != "moov-io" ]]; then
+    gitleaks_default=false
 fi
-if [[ "$org" != "moov-io" ]]; then
-    run_gitleaks=false
-fi
-if [[ "$EXPERIMENTAL" == *"gitleaks"* ]]; then
-    run_gitleaks=true
-fi
-if [[ "$SKIP_LINTERS" != "" ]]; then
-    run_gitleaks=false
-fi
-if [[ "$DISABLE_GITLEAKS" != "" ]]; then
-    run_gitleaks=false
-fi
-if [[ "$run_gitleaks" == "true" ]]; then
+if should_run gitleaks "$gitleaks_default"; then
     download_tool gitleaks "https://github.com/zricethezav/gitleaks/releases/download/v${gitleaks_version}/gitleaks_${gitleaks_version}_${UNAME}_x64.tar.gz"
 
     echo "gitleaks version: $(./bin/gitleaks version)"
@@ -193,19 +195,13 @@ if [[ "$run_gitleaks" == "true" ]]; then
 fi
 
 ## Run govulncheck which parses the compiled/used code for known vulnerabilities.
-run_govulncheck=true
-if [[ "$DISABLE_GOVULNCHECK" != "" ]]; then
-    run_govulncheck=false
-fi
-if [[ "$SKIP_LINTERS" != "" ]]; then
-    run_govulncheck=false
-fi
+govulncheck_default=true
 if [[ -f ".github/workflows/govulncheck.yml" ]]; then
     # Dedicated govulncheck workflow handles scanning (including weekly scheduled runs);
     # skip here to avoid running twice on PRs.
-    run_govulncheck=false
+    govulncheck_default=false
 fi
-if [[ "$run_govulncheck" == "true" ]]; then
+if should_run govulncheck "$govulncheck_default"; then
     echo "STARTING govulncheck check"
 
     # Install the latest govulncheck release
@@ -221,15 +217,8 @@ if [[ "$run_govulncheck" == "true" ]]; then
     fi
 fi
 
-# sqlvet
-run_sqlvet=false
-if [[ "$EXPERIMENTAL" == *"sqlvet"* ]]; then
-    run_sqlvet=true
-fi
-if [[ "$SKIP_LINTERS" != "" ]]; then
-    run_sqlvet=false
-fi
-if [[ "$run_sqlvet" == "true" ]]; then
+# sqlvet (opt-in via EXPERIMENTAL)
+if should_run sqlvet false; then
     # Download only on linux or macOS
     if [[ "$OS_NAME" != "windows" ]]; then
         sqlvet_os="$OS_NAME"
@@ -246,18 +235,8 @@ if [[ "$run_sqlvet" == "true" ]]; then
     fi
 fi
 
-run_xmlencoderclose=false
-if [[ "$DISABLE_XMLENCODERCLOSE" != "" ]]; then
-    run_xmlencoderclose=false
-fi
-if [[ "$EXPERIMENTAL" == *"xmlencoderclose"* ]];
-then
-    run_xmlencoderclose=true
-fi
-if [[ "$SKIP_LINTERS" != "" ]]; then
-    run_xmlencoderclose=false
-fi
-if [[ "$run_xmlencoderclose" == "true" ]]; then
+# xmlencoderclose (opt-in via EXPERIMENTAL)
+if should_run xmlencoderclose false; then
     echo "STARTING xmlencoderclose check"
 
     # Install xmlencoderclose
@@ -273,21 +252,13 @@ if [[ "$run_xmlencoderclose" == "true" ]]; then
     fi
 fi
 
-run_nilaway=false
-if [[ "$EXPERIMENTAL" == *"nilaway"* ]];
-then
-    run_nilaway=true
-fi
-if [[ "$SKIP_LINTERS" != "" ]];
-then
-    run_nilaway=false
-fi
-if [[ "$run_nilaway" == "true" ]];
-then
-    # nilaway can deliver false positives so it's not currently allowed inside of golangci-lint,
-    # however this linter is useful so we offer it.
-    #
-    # https://github.com/golangci/golangci-lint/issues/4045
+# nilaway (opt-in via EXPERIMENTAL)
+#
+# nilaway can deliver false positives so it's not currently allowed inside of golangci-lint,
+# however this linter is useful so we offer it.
+#
+# https://github.com/golangci/golangci-lint/issues/4045
+if should_run nilaway false; then
     echo "STARTING nilaway check"
 
     # Install nilaway
@@ -357,11 +328,9 @@ if [[ "$org" == "moov-io" ]];
 then
     STRICT_GOLANGCI_LINTERS=${STRICT_GOLANGCI_LINTERS:="yes"}
 fi
-if [[ "$SKIP_LINTERS" != "" ]]; then
-    disable_golangci=true
-fi
 if [[ "$OS_NAME" != "windows" ]]; then
-    if [[ "$disable_golangci" != "" ]];
+    # SKIP_GOLANGCI (any non-blank value) disables only golangci-lint
+    if [[ "$SKIP_GOLANGCI" != "" || "$SKIP_LINTERS" != "" ]];
     then
         echo "SKIPPING golangci-lint"
     else

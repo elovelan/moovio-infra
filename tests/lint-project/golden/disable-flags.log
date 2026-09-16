@@ -5,8 +5,6 @@
 [/] go list -m all
 [/] go list -m -u all
 [/] go build -race ./...
-[/] go install github.com/adamdecaf/xmlencoderclose@latest
-[/] xmlencoderclose -test ./...
 [/] curl -sSfL -o /dev/null -w %\{url_effective\} https://github.com/golangci/golangci-lint/releases/latest
 [/] wget -q -O ./bin/golangci-lint-2.5.0-linux-amd64.tar.gz https://github.com/golangci/golangci-lint/releases/download/v2.5.0/golangci-lint-2.5.0-linux-amd64.tar.gz
 [/] wget -q -O ./bin/golangci-lint-checksums.txt https://github.com/golangci/golangci-lint/releases/download/v2.5.0/golangci-lint-2.5.0-checksums.txt
