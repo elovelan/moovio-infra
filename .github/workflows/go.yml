@@ -39,6 +39,26 @@ jobs:
         COVER_THRESHOLD: 85.0
         SKIP_TESTS: yes
 
+  shell:
+    name: Shell Scripts
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+    - name: Check out code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        fetch-depth: 10
+        persist-credentials: false
+
+    - name: Install shellcheck (macOS)
+      if: runner.os == 'macOS'
+      run: command -v shellcheck > /dev/null || brew install shellcheck
+
+    - name: Lint and test lint-project.sh
+      run: make test-shell
+
   testing:
     name: Go Build
     runs-on: ${{ matrix.os }}
