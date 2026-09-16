@@ -1,0 +1,13 @@
+[/] go list .
+[/] go list ./...
+[/] go version
+[/] go mod why
+[/] go list -m all
+[/] go list -m -u all
+[/] go test github.com/moov-io/example -race -covermode=atomic -coverprofile=./coverage.txt -test.cpuprofile=./cpu.out -test.memprofile=./mem.out -count 1
+[/] go tool cover -func=./coverage.txt
+[/] go test github.com/moov-io/example/pkg/a -race -covermode=atomic -coverprofile=pkg/a/coverage.txt -test.cpuprofile=pkg/a/cpu.out -test.memprofile=pkg/a/mem.out -count 1
+[/] go tool cover -func=pkg/a/coverage.txt
+[/] go test github.com/moov-io/example/cmd/b -race -covermode=atomic -coverprofile=cmd/b/coverage.txt -test.cpuprofile=cmd/b/cpu.out -test.memprofile=cmd/b/mem.out -count 1
+[/] go tool cover -func=cmd/b/coverage.txt
+exit=0

@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Stub for curl: logs the invocation and answers the golangci-lint
+# "latest release" redirect lookup with a fixed tag.
+# shellcheck source=tests/lint-project/stubs/lib.sh
+. "$STUB_STUBS_DIR/lib.sh"
+stub_log curl "$@"
+
+printf 'https://github.com/golangci/golangci-lint/releases/tag/%s' "${STUB_GOLANGCI_LATEST:-v2.5.0}"
+exit 0

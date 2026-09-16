@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Stub for the external time(1) command (lint-project.sh invokes it with an
+# env-var prefix, so bash's builtin keyword does not apply). Logs and runs
+# the wrapped command.
+# shellcheck source=tests/lint-project/stubs/lib.sh
+. "$STUB_STUBS_DIR/lib.sh"
+stub_log time "$@"
+exec "$@"

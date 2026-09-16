@@ -1,0 +1,6 @@
+[/] go list .
+[/] go list ./...
+[/] go version
+[/] go mod why
+[/] go list -m all
+exit=1

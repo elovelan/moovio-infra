@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Stub for uname so golden files are identical across host operating systems.
+case "$1" in
+    -s) echo "Linux" ;;
+    -m) echo "x86_64" ;;
+    *) echo "Linux" ;;
+esac

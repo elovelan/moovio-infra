@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Generic stub for a linter binary (gitleaks, sqlvet, golangci-lint,
+# govulncheck, nilaway, xmlencoderclose). Logs the invocation under the name it
+# was invoked as. When passed --config=FILE the file's contents are appended to
+# the log so changes to the generated golangci-lint config are caught.
+# shellcheck source=tests/lint-project/stubs/lib.sh
+. "$STUB_STUBS_DIR/lib.sh"
+name=$(basename "$0")
+stub_log "$name" "$@"
+
+for arg in "$@"; do
+    case "$arg" in
+        --config=*)
+            sed 's/^/    | /' "${arg#--config=}" >> "$STUB_LOG"
+            ;;
+        version|--version)
+            echo "$name has version ${STUB_TOOL_VERSION:-2.5.0} built with go1.24.1"
+            ;;
+    esac
+done
+exit 0

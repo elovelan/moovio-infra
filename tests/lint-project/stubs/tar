@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Stub for tar: logs the invocation and "extracts" each requested member by
+# placing a copy of the generic _tool stub at the destination.
+# shellcheck source=tests/lint-project/stubs/lib.sh
+. "$STUB_STUBS_DIR/lib.sh"
+stub_log tar "$@"
+
+dest="."
+members=()
+shift # mode argument (xf, -xzf, ...)
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -C) dest="$2"; shift ;;
+        --strip-components=*) ;;
+        -*) ;;
+        *.tar.gz) ;;
+        *) members+=("$1") ;;
+    esac
+    shift
+done
+
+for member in "${members[@]}"; do
+    target="$dest/$(basename "$member")"
+    cp "$STUB_STUBS_DIR/_tool" "$target"
+    chmod +x "$target"
+done
+exit 0

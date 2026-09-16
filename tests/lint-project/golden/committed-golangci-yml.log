@@ -1,0 +1,20 @@
+[/] go list .
+[/] go list ./...
+[/] go version
+[/] go mod why
+[/] go list -m all
+[/] go list -m -u all
+[/] go build -race ./...
+[/] wget -q -O gitleaks.tar.gz https://github.com/zricethezav/gitleaks/releases/download/v8.17.0/gitleaks_8.17.0_linux_x64.tar.gz
+[/] tar xf gitleaks.tar.gz gitleaks
+[/] gitleaks version
+[/] gitleaks detect --no-git --verbose
+[/] go install golang.org/x/vuln/cmd/govulncheck@latest
+[/] govulncheck -test ./...
+[/] curl -sSfL -o /dev/null -w %\{url_effective\} https://github.com/golangci/golangci-lint/releases/latest
+[/] wget -q -O ./bin/golangci-lint-2.5.0-linux-amd64.tar.gz https://github.com/golangci/golangci-lint/releases/download/v2.5.0/golangci-lint-2.5.0-linux-amd64.tar.gz
+[/] wget -q -O ./bin/golangci-lint-checksums.txt https://github.com/golangci/golangci-lint/releases/download/v2.5.0/golangci-lint-2.5.0-checksums.txt
+[/] tar -xzf ./bin/golangci-lint-2.5.0-linux-amd64.tar.gz -C ./bin --strip-components=1 golangci-lint-2.5.0-linux-amd64/golangci-lint
+[/] golangci-lint version
+[/] golangci-lint run --verbose --timeout=5m
+exit=0
