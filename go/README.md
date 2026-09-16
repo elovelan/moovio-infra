@@ -12,12 +12,13 @@
 ### Go Linters
 
 - `DISABLE_GOVULNCHECK`: Set to skip running [govulncheck](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck)
+- `DISABLE_XMLENCODERCLOSE`: Set to skip running [xmlencoderclose](https://github.com/adamdecaf/xmlencoderclose)
 - `DISABLED_GOLANGCI_LINTERS`: Linters to disable in [golangci-lint](https://github.com/golangci/golangci-lint)
 - `DISABLE_NILAWAY`: Set to skip running [nilaway](https://github.com/uber-go/nilaway)
 - `GOLANGCI_LINTERS`: List of additional [Go linters to run with golangci-lint](https://golangci-lint.run/usage/linters/). (Example: `gosec`)
 - `SKIP_FORBIDIGO`: Don't run forbidigo linter with golangci-lint
 - `SKIP_GOLANGCI`: Don't run the golangci-lint checks
-- `SKIP_LINTERS`: Don't run any linter (except for those specified in `EXPERIMENTAL`)
+- `SKIP_LINTERS`: Don't run any linter, including those specified in `EXPERIMENTAL`
 - `GOLANGCI_SKIP_DIR`: Don't run linters on a directory
 - `GOLANGCI_SKIP_FILES`: Don't run linters on files (comma separated)
 - `STRICT_GOLANGCI_LINTERS`: Enable more linters packaged with golangci-lint

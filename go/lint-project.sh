@@ -239,12 +239,12 @@ if [[ "$run_sqlvet" == "true" ]]; then
 fi
 
 run_xmlencoderclose=false
-if [[ "$DISABLE_XMLENCODERCLOSE" != "" ]]; then
-    run_xmlencoderclose=false
-fi
 if [[ "$EXPERIMENTAL" == *"xmlencoderclose"* ]];
 then
     run_xmlencoderclose=true
+fi
+if [[ "$DISABLE_XMLENCODERCLOSE" != "" ]]; then
+    run_xmlencoderclose=false
 fi
 if [[ "$SKIP_LINTERS" != "" ]]; then
     run_xmlencoderclose=false
@@ -288,6 +288,10 @@ run_nilaway=false
 if [[ "$EXPERIMENTAL" == *"nilaway"* ]];
 then
     run_nilaway=true
+fi
+if [[ "$DISABLE_NILAWAY" != "" ]];
+then
+    run_nilaway=false
 fi
 if [[ "$SKIP_LINTERS" != "" ]];
 then
