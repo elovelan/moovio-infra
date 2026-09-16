@@ -5,6 +5,7 @@ gitleaks_version=8.17.0
 golangci_version="${GOLANGCI_LINT_VERSION:-latest}"
 sqlvet_version=v1.1.5
 
+initialize_project() {
 # Additional flags for the golangci-lint run command (set by callers)
 GOLANGCI_FLAGS="${GOLANGCI_FLAGS:-}"
 
@@ -25,7 +26,9 @@ GOFILES=($(find . -type f -not -path "./nginx/*" -name '*.go' -not -name '*.pb.g
 # Print (and capture) the host's Go version
 GO_VERSION=$(go version | grep -Eo '[0-9]\.[0-9]+\.?[0-9]?')
 echo "Detected Go version $GO_VERSION"
+}
 
+discover_platform() {
 # Set OS_NAME if it's empty (local dev)
 OS_NAME=$TRAVIS_OS_NAME
 UNAME=$(uname -s | tr [:upper:] [:lower:])
@@ -36,7 +39,9 @@ if [[ "$OS_NAME" == "" ]]; then
         export OS_NAME=linux
     fi
 fi
+}
 
+configure_run() {
 if [[ "$SKIP_LINTERS" != "" ]]; then
     echo "SKIPPING linters for $OS_NAME"
 else
@@ -80,7 +85,9 @@ if [[ "$DISABLE_GORACE" != "" ]];
 then
     GORACE=''
 fi
+}
 
+check_retracted_modules() {
 # Verify no retracted module versions are in the build
 # Set SKIP_RETRACTED=yes to skip this check, e.g. in test-only CI jobs where
 # the `go list -m -u all` network round-trip is wasted time.
@@ -118,14 +125,18 @@ do
     fi
 done
 fi
+}
 
+build_source() {
 # Build the source code (to discover compile errors prior to linting)
 if [[ "$SKIP_LINTERS" == "" && "$ONLY_GOLANGCI" != "yes" ]]; then
     echo "Building Go source code"
     go build $GORACE $GOTAGS $GOBUILD_FLAGS ./...
     echo "SUCCESS: Go code built without errors"
 fi
+}
 
+run_gitleaks() {
 # gitleaks (secret scanning, in-progress of a rollout)
 run_gitleaks=true
 if [[ "$OS_NAME" == "windows" ]]; then
@@ -165,7 +176,32 @@ if [[ "$run_gitleaks" == "true" ]]; then
 
     echo "FINISHED gitleaks check"
 fi
+}
 
+find_go_tool() {
+    tool_name="$1"
+    tool_path=""
+
+    if command -v "$tool_name" > /dev/null 2>&1; then
+        tool_path=$(command -v "$tool_name")
+    fi
+
+    # Public Github runners path
+    actions_path="/home/runner/go/bin/$tool_name"
+    if [[ -f "$actions_path" ]]; then
+        tool_path="$actions_path"
+    fi
+
+    # Moov hosted runner paths
+    actions_path="/home/actions/bin/$tool_name"
+    if [[ -f "$actions_path" ]]; then
+        tool_path="$actions_path"
+    fi
+
+    printf '%s\n' "$tool_path"
+}
+
+run_govulncheck() {
 ## Run govulncheck which parses the compiled/used code for known vulnerabilities.
 run_govulncheck=true
 if [[ "$DISABLE_GOVULNCHECK" != "" ]]; then
@@ -186,23 +222,7 @@ if [[ "$run_govulncheck" == "true" ]]; then
     go install golang.org/x/vuln/cmd/govulncheck@latest
 
     # Find govulncheck
-    bin=""
-    if command -v govulncheck > /dev/null 2>&1;
-    then
-        bin=$(command -v govulncheck)
-    fi
-    # Public Github runners path
-    actions_path="/home/runner/go/bin/govulncheck"
-    if [[ -f "$actions_path" ]];
-    then
-        bin="$actions_path"
-    fi
-    # Moov hosted runner paths
-    actions_path="/home/actions/bin/govulncheck"
-    if [[ -f "$actions_path" ]];
-    then
-        bin="$actions_path"
-    fi
+    bin=$(find_go_tool govulncheck)
 
     # Run govulncheck
     if [[ "$bin" != "" ]];
@@ -213,7 +233,9 @@ if [[ "$run_govulncheck" == "true" ]]; then
         echo "Can't find govulncheck..."
     fi
 fi
+}
 
+run_sqlvet() {
 # sqlvet
 run_sqlvet=false
 if [[ "$EXPERIMENTAL" == *"sqlvet"* ]]; then
@@ -237,7 +259,9 @@ if [[ "$run_sqlvet" == "true" ]]; then
         echo "sqlvet is not supported on windows"
     fi
 fi
+}
 
+run_xmlencoderclose() {
 run_xmlencoderclose=false
 if [[ "$DISABLE_XMLENCODERCLOSE" != "" ]]; then
     run_xmlencoderclose=false
@@ -256,23 +280,7 @@ if [[ "$run_xmlencoderclose" == "true" ]]; then
     go install github.com/adamdecaf/xmlencoderclose@latest
 
     # Find the linter
-    bin=""
-    if command -v xmlencoderclose > /dev/null 2>&1;
-    then
-        bin=$(command -v xmlencoderclose)
-    fi
-    # Public Github runners path
-    actions_path="/home/runner/go/bin/xmlencoderclose"
-    if [[ -f "$actions_path" ]];
-    then
-        bin="$actions_path"
-    fi
-    # Moov hosted runner paths
-    actions_path="/home/actions/bin/xmlencoderclose"
-    if [[ -f "$actions_path" ]];
-    then
-        bin="$actions_path"
-    fi
+    bin=$(find_go_tool xmlencoderclose)
 
     # Run xmlencoderclose
     if [[ "$bin" != "" ]];
@@ -283,7 +291,9 @@ if [[ "$run_xmlencoderclose" == "true" ]]; then
         echo "Can't find xmlencoderclose..."
     fi
 fi
+}
 
+run_nilaway() {
 run_nilaway=false
 if [[ "$EXPERIMENTAL" == *"nilaway"* ]];
 then
@@ -304,26 +314,8 @@ then
     # Install nilaway
     go install go.uber.org/nilaway/cmd/nilaway@latest
 
-    # Find nilaway on PATH
-    bin=""
-    if command -v nilaway > /dev/null 2>&1;
-    then
-        bin=$(command -v nilaway)
-    fi
-
-    # Public Github runners path
-    actions_path="/home/runner/go/bin/nilaway"
-    if [[ -f "$actions_path" ]];
-    then
-        bin="$actions_path"
-    fi
-
-    # Moov hosted runner paths
-    actions_path="/home/actions/bin/nilaway"
-    if [[ -f "$actions_path" ]];
-    then
-        bin="$actions_path"
-    fi
+    # Find nilaway
+    bin=$(find_go_tool nilaway)
 
     nilaway_memory_limit="7168MiB"
     if [[ "$NILAWAY_MEMORY_LIMIT" != "" ]]; then
@@ -343,6 +335,7 @@ then
         echo "FINISHED nilaway check"
     fi
 fi
+}
 
 # Download a golangci-lint release binary into ./bin/golangci-lint.
 # Fetched directly from GitHub releases instead of the upstream install.sh,
@@ -391,6 +384,7 @@ install_golangci_lint() {
     rm -f "./bin/${name}.tar.gz" ./bin/golangci-lint-checksums.txt
 }
 
+run_golangci_lint() {
 # golangci-lint
 if [[ "$org" == "moov-io" ]];
 then
@@ -565,7 +559,9 @@ EOF
         echo "FINISHED golangci-lint checks"
     fi
 fi
+}
 
+run_go_tests() {
 if [[ "$SKIP_TESTS" == "yes" ]];
 then
     echo "SKIPPING Go tests from env var"
@@ -701,3 +697,22 @@ else
 fi
 
 echo "finished running Go tests"
+}
+
+main() {
+    initialize_project
+    discover_platform
+    configure_run
+
+    check_retracted_modules
+    build_source
+    run_gitleaks
+    run_govulncheck
+    run_sqlvet
+    run_xmlencoderclose
+    run_nilaway
+    run_golangci_lint
+    run_go_tests
+}
+
+main "$@"
