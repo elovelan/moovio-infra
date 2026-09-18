@@ -37,22 +37,24 @@ download_tool() {
     rm -f "$name.tar.gz"
 }
 
-# Print the path of a Go tool installed with 'go install'. PATH is checked
-# first, then the public GitHub runner and Moov hosted runner bin directories
-# (which may not be on PATH) take precedence when present. Prints nothing if
-# the tool cannot be found.
+# Print the path of a Go tool that was just installed with 'go install': the
+# binary in GOBIN (or GOPATH/bin when GOBIN is unset), which is not always on
+# PATH, falling back to whatever PATH provides. Prints nothing if the tool
+# cannot be found.
 find_go_tool() {
-    local name="$1" bin="" candidate
+    local name="$1" install_dir gopath
 
-    if command -v "$name" > /dev/null 2>&1; then
-        bin=$(command -v "$name")
+    install_dir=$(go env GOBIN)
+    if [[ -z "$install_dir" ]]; then
+        gopath=$(go env GOPATH)
+        install_dir="${gopath%%:*}/bin"
     fi
-    for candidate in "/home/runner/go/bin/$name" "/home/actions/bin/$name"; do
-        if [[ -f "$candidate" ]]; then
-            bin="$candidate"
-        fi
-    done
-    echo "$bin"
+
+    if [[ -x "$install_dir/$name" ]]; then
+        echo "$install_dir/$name"
+    elif command -v "$name" > /dev/null 2>&1; then
+        command -v "$name"
+    fi
 }
 
 # Decide whether the named check runs. It is enabled when its default is
@@ -289,7 +291,10 @@ if should_run nilaway false; then
     if [[ "$bin" != "" ]];
     then
         echo "Running nilaway with GOMEMLIMIT=$nilaway_memory_limit in $nilaway_packages"
-        GOMEMLIMIT="$nilaway_memory_limit" time "$bin" -test=false "$nilaway_packages"
+        # Export in a subshell rather than prefixing the command: a VAR=value
+        # prefix would turn bash's 'time' keyword into a lookup for an external
+        # time(1) binary, which not every machine has.
+        (export GOMEMLIMIT="$nilaway_memory_limit"; time "$bin" -test=false "$nilaway_packages")
         echo "FINISHED nilaway check"
     fi
 fi

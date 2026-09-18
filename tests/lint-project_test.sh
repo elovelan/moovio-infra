@@ -261,8 +261,43 @@ test_experimental_xmlencoderclose() {
 test_experimental_nilaway_with_options() {
     run_lint EXPERIMENTAL=nilaway NILAWAY_PACKAGES=./pkg/... NILAWAY_MEMORY_LIMIT=1GiB SKIP_TESTS=yes
     assert_ran "go install go.uber.org/nilaway/cmd/nilaway@latest"
-    assert_ran_exactly "time <STUBS>/nilaway -test=false ./pkg/..."
     assert_ran_exactly "GOMEMLIMIT=1GiB nilaway -test=false ./pkg/..."
+}
+
+test_installed_tools_run_from_gopath_bin_when_gobin_unset() {
+    given_tools_log_full_path
+    run_lint EXPERIMENTAL=xmlencoderclose SKIP_TESTS=yes
+    assert_ran_exactly "go env GOBIN"
+    assert_ran_exactly "go env GOPATH"
+    assert_ran_exactly "<WORK>/home/go/bin/govulncheck -test ./..."
+    assert_ran_exactly "<WORK>/home/go/bin/xmlencoderclose -test ./..."
+}
+
+test_installed_tools_run_from_gobin_when_set() {
+    given_tools_log_full_path
+    run_lint GOBIN="$work/gobin" EXPERIMENTAL=nilaway SKIP_TESTS=yes
+    assert_ran_exactly "<WORK>/gobin/govulncheck -test ./..."
+    assert_ran_exactly "GOMEMLIMIT=7168MiB <WORK>/gobin/nilaway -test=false ./..."
+    assert_not_ran "go env GOPATH"
+}
+
+test_installed_tools_fall_back_to_path() {
+    given_go_install_writes_nowhere
+    given_tools_log_full_path
+    with_tool_on_path nilaway
+    run_lint EXPERIMENTAL=nilaway SKIP_TESTS=yes
+    assert_ran_exactly "GOMEMLIMIT=7168MiB <WORK>/path/nilaway -test=false ./..."
+}
+
+test_missing_installed_tool_is_skipped_not_fatal() {
+    given_go_install_writes_nowhere
+    run_lint EXPERIMENTAL=xmlencoderclose SKIP_TESTS=yes
+    assert_exit 0
+    assert_ran "go install golang.org/x/vuln/cmd/govulncheck@latest"
+    assert_ran "go install github.com/adamdecaf/xmlencoderclose@latest"
+    assert_not_ran "govulncheck -test"
+    assert_not_ran "xmlencoderclose -test"
+    assert_ran "$golangci_run"
 }
 
 test_experimental_nilaway_defaults() {
@@ -356,6 +391,19 @@ given_coverage() { stub_env+=("STUB_COVERAGE=$1"); }
 # Make the named linter binary exit 3 when invoked with a subcommand.
 given_failing_tool() { stub_env+=("STUB_FAIL=$1"); }
 
+# Make the stubbed 'go install' succeed without producing a binary anywhere
+# the script looks.
+given_go_install_writes_nowhere() { stub_env+=("STUB_INSTALL_NOWHERE=1"); }
+
+# Log linter binaries by full path instead of name, to assert which copy ran.
+given_tools_log_full_path() { stub_env+=("STUB_LOG_FULL_PATH=1"); }
+
+# Put a copy of the named tool on PATH (outside the go install directory).
+with_tool_on_path() {
+    mkdir -p "$work/path"
+    cp "$stubs/_tool" "$work/path/$1"
+}
+
 with_submodule() {
     mkdir -p "$project/sub"
     printf 'module example/sub\n' > "$project/sub/go.mod"
@@ -383,7 +431,7 @@ with_prebuilt_golangci() {
 run_lint() {
     (
         cd "$project" && env -i \
-            PATH="$stubs:/usr/bin:/bin" \
+            PATH="$stubs:$work/path:/usr/bin:/bin" \
             HOME="$work/home" \
             TMPDIR="$work/tmp" \
             LC_ALL=C \
@@ -396,7 +444,7 @@ run_lint() {
     ) > "$work/output.txt" 2>&1
     exit_code=$?
     commands=$(sed -e "s#$work/tmp/tmp\.[A-Za-z0-9]*#<TMPDIR>#g" \
-                   -e "s#$stubs#<STUBS>#g" "$work/commands.log")
+                   -e "s#$work#<WORK>#g" "$work/commands.log")
 }
 
 # ---------------------------------------------------------------------------
@@ -523,6 +571,19 @@ case "$*" in
         for dep in ${STUB_RETRACTED:-}; do echo "$dep v0.1.0 (retracted) [v0.2.0]"; done
         ;;
     "list -m -u -json "*) printf '{"Path": "%s"}\n' "$5" ;;
+    "env GOBIN") echo "${GOBIN:-}" ;;
+    "env GOPATH") echo "${GOPATH:-$HOME/go}" ;;
+    "install "*)
+        # Place the tool where the real 'go install' would, unless the test
+        # simulates an install that lands somewhere the script does not look.
+        if [[ -z "${STUB_INSTALL_NOWHERE:-}" ]]; then
+            dir="${GOBIN:-${GOPATH:-$HOME/go}/bin}"
+            tool="${2%@*}"
+            mkdir -p "$dir"
+            cp "$STUB_DIR/_tool" "$dir/${tool##*/}"
+            chmod +x "$dir/${tool##*/}"
+        fi
+        ;;
     "tool cover -func="*) printf 'a.go:1:\tFoo\t100.0%%\ntotal:\t(statements)\t%s%%\n' "${STUB_COVERAGE:-87.5}" ;;
     "test "*)
         for arg in "$@"; do
@@ -534,7 +595,7 @@ case "$*" in
             esac
         done
         ;;
-    "build "*|"install "*|"mod tidy"|"mod vendor") ;;
+    "build "*|"mod tidy"|"mod vendor") ;;
     *) echo "go stub: unhandled invocation: go $*" >&2; exit 1 ;;
 esac
 exit 0
@@ -598,22 +659,15 @@ EOF
 case "$1" in -m) echo "x86_64" ;; *) echo "Linux" ;; esac
 EOF
 
-    cat > "$stubs/time" <<'EOF'
-#!/usr/bin/env bash
-# lint-project.sh calls time(1) with an env-var prefix, so the bash keyword
-# does not apply and an external command is needed.
-. "$STUB_DIR/lib.sh"
-stub_log time "$@"
-exec "$@"
-EOF
-
     # Generic linter binary (gitleaks, sqlvet, golangci-lint, govulncheck,
-    # nilaway, xmlencoderclose). Logs under the name it was invoked as, copies
-    # any --config file aside for assertions, and answers version queries.
+    # nilaway, xmlencoderclose). Logs under the name it was invoked as (or its
+    # full path when STUB_LOG_FULL_PATH is set), copies any --config file aside
+    # for assertions, and answers version queries.
     cat > "$stubs/_tool" <<'EOF'
 #!/usr/bin/env bash
 . "$STUB_DIR/lib.sh"
 name=$(basename "$0")
+if [[ -n "${STUB_LOG_FULL_PATH:-}" ]]; then name="$0"; fi
 if [[ -n "${GOMEMLIMIT:-}" ]]; then
     stub_log "GOMEMLIMIT=$GOMEMLIMIT" "$name" "$@"
 else
@@ -632,10 +686,7 @@ fi
 exit 0
 EOF
 
-    chmod +x "$stubs"/go "$stubs"/wget "$stubs"/tar "$stubs"/curl "$stubs"/uname "$stubs"/time "$stubs"/_tool
-    ln -s _tool "$stubs/govulncheck"
-    ln -s _tool "$stubs/nilaway"
-    ln -s _tool "$stubs/xmlencoderclose"
+    chmod +x "$stubs"/go "$stubs"/wget "$stubs"/tar "$stubs"/curl "$stubs"/uname "$stubs"/_tool
 }
 
 # ---------------------------------------------------------------------------
