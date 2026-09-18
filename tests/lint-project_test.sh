@@ -53,6 +53,7 @@ test_default_moov_io_project_runs_every_check() {
     assert_ran "go install golang.org/x/vuln/cmd/govulncheck@latest"
     assert_ran "go test ./... -race -coverprofile=<TMPDIR>/coverage.txt -covermode=atomic -count 1"
     assert_ran_exactly "[sub] go test ./... -race"
+    assert_not_ran "go list ./..."
     assert_not_ran "sqlvet"
     assert_not_ran "xmlencoderclose"
     assert_not_ran "nilaway"
@@ -328,6 +329,7 @@ test_explicit_gotest_flags_replace_experimental_defaults() {
 test_profile_gotest_runs_each_package_with_profiles() {
     run_lint PROFILE_GOTEST=yes COVER_THRESHOLD=50.0 SKIP_LINTERS=yes
     assert_exit 0
+    assert_ran_exactly "go list ./..."
     assert_ran_exactly "go test github.com/moov-io/example -race -covermode=atomic -coverprofile=./coverage.txt -test.cpuprofile=./cpu.out -test.memprofile=./mem.out -count 1"
     assert_ran_exactly "go test github.com/moov-io/example/pkg/a -race -covermode=atomic -coverprofile=pkg/a/coverage.txt -test.cpuprofile=pkg/a/cpu.out -test.memprofile=pkg/a/mem.out -count 1"
     assert_ran "go tool cover -func=pkg/a/coverage.txt"
@@ -366,6 +368,11 @@ test_disable_gorace_drops_race_flag() {
 test_cgo_disabled_drops_race_flag() {
     run_lint CGO_ENABLED=0 SKIP_LINTERS=yes
     assert_ran_exactly "go test ./... '' -coverprofile=<TMPDIR>/coverage.txt -covermode=atomic -count 1"
+}
+
+test_wasm_target_drops_race_flag() {
+    run_lint GOOS=js GOARCH=wasm SKIP_TESTS=yes
+    assert_ran_exactly "go build ./..."
 }
 
 test_windows_runs_short_tests_without_unsupported_tools() {
