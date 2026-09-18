@@ -230,6 +230,15 @@ test_disable_flags_win_over_experimental() {
     assert_ran "$golangci_run"
 }
 
+test_skip_flags_disable_individual_checks() {
+    run_lint SKIP_TESTS=yes SKIP_GITLEAKS=yes SKIP_NILAWAY=yes EXPERIMENTAL=nilaway,sqlvet
+    assert_exit 0
+    assert_not_ran "gitleaks"
+    assert_not_ran "nilaway"
+    assert_ran "govulncheck -test ./..."
+    assert_ran_exactly "sqlvet ."
+}
+
 test_dedicated_govulncheck_workflow_skips_scan() {
     with_file .github/workflows/govulncheck.yml ""
     run_lint SKIP_TESTS=yes

@@ -14,139 +14,144 @@ sqlvet_version=v1.1.5
 # Additional flags for the golangci-lint run command (set by callers)
 GOLANGCI_FLAGS="${GOLANGCI_FLAGS:-}"
 
-mkdir -p ./bin/
+main() {
+    configure
 
-# Files created by this script that must not be left behind in the project,
-# even when a check fails and set -e exits early.
-generated_files=()
-cleanup() {
-    if [[ ${#generated_files[@]} -gt 0 ]]; then
-        rm -f "${generated_files[@]}"
-    fi
-}
-trap cleanup EXIT
-
-# Download a release tarball containing a single binary named $name and
-# place it at ./bin/$name.
-download_tool() {
-    local name="$1" url="$2"
-
-    wget -q -O "$name.tar.gz" "$url"
-    tar xf "$name.tar.gz" "$name"
-    mv "$name" "./bin/$name"
-    rm -f "$name.tar.gz"
-}
-
-# Print the path of a Go tool that was just installed with 'go install': the
-# binary in GOBIN (or GOPATH/bin when GOBIN is unset), which is not always on
-# PATH, falling back to whatever PATH provides. Prints nothing if the tool
-# cannot be found.
-find_go_tool() {
-    local name="$1" install_dir gopath
-
-    install_dir=$(go env GOBIN)
-    if [[ -z "$install_dir" ]]; then
-        gopath=$(go env GOPATH)
-        install_dir="${gopath%%:*}/bin"
+    if [[ "$ONLY_GOLANGCI" != "yes" ]]; then
+        if [[ "$org" == "moov-io" ]]; then
+            check_no_moovfinancial_dependencies
+        fi
+        # Set SKIP_RETRACTED=yes to skip this check, e.g. in test-only CI jobs
+        # where the `go list -m -u all` network round-trip is wasted time.
+        if [[ "$SKIP_RETRACTED" != "yes" ]]; then
+            check_no_retracted_modules
+        fi
+        if [[ "$SKIP_LINTERS" == "" ]]; then
+            build
+        fi
     fi
 
-    if [[ -x "$install_dir/$name" ]]; then
-        echo "$install_dir/$name"
-    elif command -v "$name" > /dev/null 2>&1; then
-        command -v "$name"
+    # gitleaks is on by default for moov-io projects (except Windows), opt-in elsewhere.
+    local gitleaks_default=true
+    if [[ "$OS_NAME" == "windows" || "$org" != "moov-io" ]]; then
+        gitleaks_default=false
     fi
-}
+    run_check gitleaks "$gitleaks_default"
 
-# Decide whether the named check runs. It is enabled when its default is
-# "true" or when it is listed in EXPERIMENTAL, and always disabled when
-# SKIP_LINTERS or DISABLE_<NAME> (upper-cased) is set to a non-blank value.
-should_run() {
-    local name="$1" enabled="$2" disable_var
-
-    if [[ "$EXPERIMENTAL" == *"$name"* ]]; then
-        enabled=true
+    # A dedicated govulncheck workflow handles scanning (including weekly
+    # scheduled runs); skip here to avoid running twice on PRs.
+    local govulncheck_default=true
+    if [[ -f ".github/workflows/govulncheck.yml" ]]; then
+        govulncheck_default=false
     fi
-    if [[ "$SKIP_LINTERS" != "" ]]; then
-        enabled=false
+    run_check govulncheck "$govulncheck_default"
+
+    run_check sqlvet false
+    run_check xmlencoderclose false
+    run_check nilaway false
+
+    local golangci_default=true
+    if [[ "$OS_NAME" == "windows" ]]; then
+        golangci_default=false
     fi
-    disable_var="DISABLE_$(echo "$name" | tr '[:lower:]' '[:upper:]')"
-    if [[ "${!disable_var}" != "" ]]; then
-        enabled=false
+    run_check golangci "$golangci_default"
+
+    if [[ "$SKIP_TESTS" == "yes" ]]; then
+        echo "SKIPPING Go tests from env var"
+        return
     fi
 
-    [[ "$enabled" == "true" ]]
-}
-
-# Collect the module and its packages (used by PROFILE_GOTEST)
-MODNAME=$(go list .)
-# shellcheck disable=SC2207 # package paths never contain whitespace or globs
-GOPKGS=($(go list ./...))
-
-# Print (and capture) the host's Go version
-GO_VERSION=$(go version | grep -Eo '[0-9]\.[0-9]+\.?[0-9]?')
-echo "Detected Go version $GO_VERSION"
-
-# Set OS_NAME if it's empty (local dev)
-OS_NAME=$TRAVIS_OS_NAME
-UNAME=$(uname -s | tr '[:upper:]' '[:lower:]')
-if [[ "$OS_NAME" == "" ]]; then
-    if [[ "$UNAME" == "darwin" ]]; then
-        export OS_NAME=osx
+    run_tests
+    if [[ "$SKIP_SUBMODULE_TESTS" == "" ]]; then
+        run_submodule_tests
+    fi
+    if [[ "$COVER_THRESHOLD" != "" && "$COVER_THRESHOLD" != "disabled" ]]; then
+        check_coverage_threshold
     else
-        export OS_NAME=linux
+        echo "Skipping code coverage threshold, consider setting COVER_THRESHOLD. (Example: 85.0)"
     fi
-fi
+    echo "finished running Go tests"
+}
 
-if [[ "$SKIP_LINTERS" != "" ]]; then
-    echo "SKIPPING linters for $OS_NAME"
-else
-    echo "running go linters for $OS_NAME"
-fi
+# Detect the environment and derive the globals the checks rely on:
+# GO_VERSION, OS_NAME, UNAME, org, MODNAME, GOPKGS, GOTAGS, GOLANGCI_TAGS, GORACE.
+configure() {
+    mkdir -p ./bin/
+    trap cleanup EXIT
 
-# ONLY_GOLANGCI=yes skips all checks except golangci-lint (and its --fix via GOLANGCI_DO_FIX=true)
-if [[ "$ONLY_GOLANGCI" == "yes" ]]; then
-    # shellcheck disable=SC2034 # read indirectly by should_run
-    DISABLE_GITLEAKS=yes
-    # shellcheck disable=SC2034 # read indirectly by should_run
-    DISABLE_GOVULNCHECK=yes
-    EXPERIMENTAL=""
-    SKIP_TESTS=yes
-fi
+    # Collect the module and its packages (used by PROFILE_GOTEST)
+    MODNAME=$(go list .)
+    # shellcheck disable=SC2207 # package paths never contain whitespace or globs
+    GOPKGS=($(go list ./...))
 
-# Would be set to 'moov-io' or 'moovfinancial'
-org=$(go mod why | head -n1  | awk -F'/' '{print $2}')
+    # Print (and capture) the host's Go version
+    GO_VERSION=$(go version | grep -Eo '[0-9]\.[0-9]+\.?[0-9]?')
+    echo "Detected Go version $GO_VERSION"
 
-# Reject moovfinancial dependencies in moov-io projects
-if [[ "$ONLY_GOLANGCI" != "yes" && "$org" == "moov-io" ]];
-then
-    # Fail our build if we find moovfinancial dependencies
+    # Set OS_NAME if it's empty (local dev)
+    OS_NAME=$TRAVIS_OS_NAME
+    UNAME=$(uname -s | tr '[:upper:]' '[:lower:]')
+    if [[ "$OS_NAME" == "" ]]; then
+        if [[ "$UNAME" == "darwin" ]]; then
+            export OS_NAME=osx
+        else
+            export OS_NAME=linux
+        fi
+    fi
+
+    if [[ "$SKIP_LINTERS" != "" ]]; then
+        echo "SKIPPING linters for $OS_NAME"
+    else
+        echo "running go linters for $OS_NAME"
+    fi
+
+    # ONLY_GOLANGCI=yes skips all checks except golangci-lint (and its --fix via GOLANGCI_DO_FIX=true)
+    if [[ "$ONLY_GOLANGCI" == "yes" ]]; then
+        # shellcheck disable=SC2034 # read indirectly by should_run
+        DISABLE_GITLEAKS=yes
+        # shellcheck disable=SC2034 # read indirectly by should_run
+        DISABLE_GOVULNCHECK=yes
+        EXPERIMENTAL=""
+        SKIP_TESTS=yes
+    fi
+
+    # Would be set to 'moov-io' or 'moovfinancial'
+    org=$(go mod why | head -n1  | awk -F'/' '{print $2}')
+
+    # Allow for build tags to be set
+    if [[ "$GOTAGS" != "" ]]; then
+        GOLANGCI_TAGS=" --build-tags $GOTAGS "
+        GOTAGS=" -tags $GOTAGS "
+    fi
+
+    GORACE='-race'
+    if [[ "$CGO_ENABLED" == "0" || "$GOOS" == "js" || "$GOARCH" == "wasm" ]];
+    then
+        GORACE=''
+    fi
+    if [[ "$DISABLE_GORACE" != "" ]];
+    then
+        GORACE=''
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Dependency checks and build
+# ---------------------------------------------------------------------------
+
+# Fail the build if a moov-io (OSS) project depends on moovfinancial code.
+check_no_moovfinancial_dependencies() {
     if go list -m all | grep moovfinancial;
     then
         echo "Found github.com/moovfinancial dependencies in OSS. Please remove"
         exit 1
     fi
-fi
+}
 
-# Allow for build tags to be set
-if [[ "$GOTAGS" != "" ]]; then
-    GOLANGCI_TAGS=" --build-tags $GOTAGS "
-    GOTAGS=" -tags $GOTAGS "
-fi
+# Verify no retracted module versions are in the build.
+check_no_retracted_modules() {
+    local retracted_mods skip_modules dep skip skip_mod
 
-GORACE='-race'
-if [[ "$CGO_ENABLED" == "0" || "$GOOS" == "js" || "$GOARCH" == "wasm" ]];
-then
-    GORACE=''
-fi
-if [[ "$DISABLE_GORACE" != "" ]];
-then
-    GORACE=''
-fi
-
-# Verify no retracted module versions are in the build
-# Set SKIP_RETRACTED=yes to skip this check, e.g. in test-only CI jobs where
-# the `go list -m -u all` network round-trip is wasted time.
-if [[ "$ONLY_GOLANGCI" != "yes" && "$SKIP_RETRACTED" != "yes" ]]; then
     # shellcheck disable=SC2207 # module paths never contain whitespace or globs
     retracted_mods=($(go list -m -u all | grep retracted | cut -f1 -d' '))
     skip_modules=(
@@ -178,22 +183,59 @@ if [[ "$ONLY_GOLANGCI" != "yes" && "$SKIP_RETRACTED" != "yes" ]]; then
             fi
         fi
     done
-fi
+}
 
 # Build the source code (to discover compile errors prior to linting)
-if [[ "$SKIP_LINTERS" == "" && "$ONLY_GOLANGCI" != "yes" ]]; then
+build() {
     echo "Building Go source code"
     go build $GORACE $GOTAGS $GOBUILD_FLAGS ./...
     echo "SUCCESS: Go code built without errors"
-fi
+}
+
+# ---------------------------------------------------------------------------
+# Linters. Each check_<name> function runs unconditionally; run_check decides
+# whether to call it.
+# ---------------------------------------------------------------------------
+
+# Run check_<name> if should_run allows it. Checks that are on by default
+# announce when they have been turned off so the gap is visible in CI logs.
+run_check() {
+    local name="$1" default="$2"
+
+    if should_run "$name" "$default"; then
+        "check_$name"
+    elif [[ "$default" == "true" ]]; then
+        echo "SKIPPING $name"
+    fi
+}
+
+# Decide whether the named check runs. It is enabled when its default is
+# "true" or when it is listed in EXPERIMENTAL, and always disabled when
+# SKIP_LINTERS, SKIP_<NAME> or DISABLE_<NAME> (upper-cased) is set to a
+# non-blank value.
+should_run() {
+    local name="$1" enabled="$2" upper skip_var disable_var
+
+    if [[ "$EXPERIMENTAL" == *"$name"* ]]; then
+        enabled=true
+    fi
+    if [[ "$SKIP_LINTERS" != "" ]]; then
+        enabled=false
+    fi
+    upper=$(echo "$name" | tr '[:lower:]' '[:upper:]')
+    skip_var="SKIP_$upper"
+    disable_var="DISABLE_$upper"
+    if [[ "${!skip_var}" != "" || "${!disable_var}" != "" ]]; then
+        enabled=false
+    fi
+
+    [[ "$enabled" == "true" ]]
+}
 
 # gitleaks (secret scanning, in-progress of a rollout)
-# On by default for moov-io projects (except Windows), opt-in elsewhere.
-gitleaks_default=true
-if [[ "$OS_NAME" == "windows" || "$org" != "moov-io" ]]; then
-    gitleaks_default=false
-fi
-if should_run gitleaks "$gitleaks_default"; then
+check_gitleaks() {
+    local dirs dir
+
     download_tool gitleaks "https://github.com/zricethezav/gitleaks/releases/download/v${gitleaks_version}/gitleaks_${gitleaks_version}_${UNAME}_x64.tar.gz"
 
     echo "gitleaks version: $(./bin/gitleaks version)"
@@ -212,16 +254,12 @@ if should_run gitleaks "$gitleaks_default"; then
     fi
 
     echo "FINISHED gitleaks check"
-fi
+}
 
-## Run govulncheck which parses the compiled/used code for known vulnerabilities.
-govulncheck_default=true
-if [[ -f ".github/workflows/govulncheck.yml" ]]; then
-    # Dedicated govulncheck workflow handles scanning (including weekly scheduled runs);
-    # skip here to avoid running twice on PRs.
-    govulncheck_default=false
-fi
-if should_run govulncheck "$govulncheck_default"; then
+# govulncheck parses the compiled/used code for known vulnerabilities.
+check_govulncheck() {
+    local bin
+
     echo "STARTING govulncheck check"
 
     # Install the latest govulncheck release
@@ -235,10 +273,11 @@ if should_run govulncheck "$govulncheck_default"; then
     else
         echo "Can't find govulncheck..."
     fi
-fi
+}
 
-# sqlvet (opt-in via EXPERIMENTAL)
-if should_run sqlvet false; then
+check_sqlvet() {
+    local sqlvet_os
+
     # Download only on linux or macOS
     if [[ "$OS_NAME" != "windows" ]]; then
         sqlvet_os="$OS_NAME"
@@ -253,10 +292,11 @@ if should_run sqlvet false; then
     else
         echo "sqlvet is not supported on windows"
     fi
-fi
+}
 
-# xmlencoderclose (opt-in via EXPERIMENTAL)
-if should_run xmlencoderclose false; then
+check_xmlencoderclose() {
+    local bin
+
     echo "STARTING xmlencoderclose check"
 
     # Install xmlencoderclose
@@ -270,15 +310,15 @@ if should_run xmlencoderclose false; then
     else
         echo "Can't find xmlencoderclose..."
     fi
-fi
+}
 
-# nilaway (opt-in via EXPERIMENTAL)
-#
-# nilaway can deliver false positives so it's not currently allowed inside of golangci-lint,
-# however this linter is useful so we offer it.
+# nilaway can deliver false positives so it's not currently allowed inside of
+# golangci-lint, however this linter is useful so we offer it.
 #
 # https://github.com/golangci/golangci-lint/issues/4045
-if should_run nilaway false; then
+check_nilaway() {
+    local bin nilaway_memory_limit nilaway_packages
+
     echo "STARTING nilaway check"
 
     # Install nilaway
@@ -297,7 +337,7 @@ if should_run nilaway false; then
         (export GOMEMLIMIT="$nilaway_memory_limit"; time "$bin" -test=false "$nilaway_packages")
         echo "FINISHED nilaway check"
     fi
-fi
+}
 
 # Download a golangci-lint release binary into ./bin/golangci-lint.
 # Fetched directly from GitHub releases instead of the upstream install.sh,
@@ -306,7 +346,7 @@ fi
 # reused, so callers can pre-place their own build (for example one made with
 # 'golangci-lint custom' to link in module plugins).
 install_golangci_lint() {
-    version="$1"
+    local version="$1" arch name release_url sha_cmd
 
     # Resolve "latest" to a tag via the GitHub releases redirect.
     if [[ "$version" == "latest" ]]; then
@@ -346,65 +386,84 @@ install_golangci_lint() {
     rm -f "./bin/${name}.tar.gz" ./bin/golangci-lint-checksums.txt
 }
 
-# golangci-lint
-if [[ "$org" == "moov-io" ]];
-then
-    STRICT_GOLANGCI_LINTERS=${STRICT_GOLANGCI_LINTERS:="yes"}
-fi
-if [[ "$OS_NAME" != "windows" ]]; then
-    # SKIP_GOLANGCI (any non-blank value) disables only golangci-lint
-    if [[ "$SKIP_GOLANGCI" != "" || "$SKIP_LINTERS" != "" ]];
+# Run golangci-lint, either with the project's committed .golangci.yml or with
+# a config generated from the GOLANGCI_* / STRICT_GOLANGCI_LINTERS options.
+check_golangci() {
+    local fix_flag="" enabled disabled config
+
+    echo "STARTING golangci-lint checks"
+
+    install_golangci_lint "$golangci_version"
+
+    ./bin/golangci-lint version
+
+    if [[ "$GOLANGCI_DO_FIX" == "true" ]]; then
+        fix_flag="--fix"
+    fi
+
+    # If the project has a committed .golangci.yml, use it directly and skip
+    # dynamic config generation — the file controls all linter settings.
+    if [[ -f ".golangci.yml" ]]; then
+        ./bin/golangci-lint $GOLANGCI_FLAGS run $fix_flag --verbose --timeout=5m $GOLANGCI_TAGS
+        echo "FINISHED golangci-lint checks"
+        return
+    fi
+
+    if [[ "$org" == "moov-io" ]];
     then
-        echo "SKIPPING golangci-lint"
-    else
-        echo "STARTING golangci-lint checks"
+        STRICT_GOLANGCI_LINTERS=${STRICT_GOLANGCI_LINTERS:="yes"}
+    fi
 
-        install_golangci_lint "$golangci_version"
+    # Build the linters list
+    # TODO(adam): re-add unused when they fix some bugs
+    enabled="asciicheck,bidichk,bodyclose,durationcheck,exhaustive,fatcontext,forcetypeassert,gosec,misspell,nolintlint,protogetter,rowserrcheck,sqlclosecheck,testifylint,wastedassign"
 
-        ./bin/golangci-lint version
+    if [ -n "$GOLANGCI_LINTERS" ]; then
+        # Append additional linters
+        enabled="$enabled,$GOLANGCI_LINTERS"
+    fi
 
-        GOLANGCI_FIX_FLAG=""
-        if [[ "$GOLANGCI_DO_FIX" == "true" ]]; then
-            GOLANGCI_FIX_FLAG="--fix"
-        fi
+    # If SET_GOLANGCI_LINTERS is set, it completely replaces the current set
+    if [ -n "$SET_GOLANGCI_LINTERS" ]; then
+        enabled="$SET_GOLANGCI_LINTERS"
+    fi
 
-        # If the project has a committed .golangci.yml, use it directly and skip
-        # dynamic config generation — the file controls all linter settings.
-        if [[ -f ".golangci.yml" ]]; then
-            ./bin/golangci-lint $GOLANGCI_FLAGS run $GOLANGCI_FIX_FLAG --verbose --timeout=5m $GOLANGCI_TAGS
-        else
-            # Build the linters list
-            # TODO(adam): re-add unused when they fix some bugs
-            default_linters="asciicheck,bidichk,bodyclose,durationcheck,exhaustive,fatcontext,forcetypeassert,gosec,misspell,nolintlint,protogetter,rowserrcheck,sqlclosecheck,testifylint,wastedassign"
-            enabled="$default_linters"
+    # Add strict linters if STRICT_GOLANGCI_LINTERS is set to "yes"
+    if [[ "$STRICT_GOLANGCI_LINTERS" == "yes" ]]; then
+        enabled="$enabled,dupword,exptostd,gocheckcompilerdirectives,iface,mirror,nilnesserr,sloglint,testableexamples,usetesting"
+    fi
 
-            if [ -n "$GOLANGCI_LINTERS" ]; then
-                # Append additional linters
-                enabled="$enabled,$GOLANGCI_LINTERS"
-            fi
+    # Add forbidigo unless skipped
+    if [[ "$SKIP_FORBIDIGO" != "yes" ]];
+    then
+        enabled="$enabled,forbidigo"
+    fi
 
-            # If SET_GOLANGCI_LINTERS is set, it completely replaces the current set
-            if [ -n "$SET_GOLANGCI_LINTERS" ]; then
-                enabled="$SET_GOLANGCI_LINTERS"
-            fi
+    disabled="depguard,errcheck"
+    if [[ "$DISABLED_GOLANGCI_LINTERS" != "" ]]; then
+        disabled="$disabled,$DISABLED_GOLANGCI_LINTERS"
+    fi
 
-            # Add strict linters if STRICT_GOLANGCI_LINTERS is set to "yes"
-            if [[ "$STRICT_GOLANGCI_LINTERS" == "yes" ]]; then
-                enabled="$enabled,dupword,exptostd,gocheckcompilerdirectives,iface,mirror,nilnesserr,sloglint,testableexamples,usetesting"
-            fi
+    # Create config file in the project directory so golangci-lint v2
+    # resolves file paths relative to the project root, not the config location.
+    config=".golangci-lint-generated.yml"
+    generated_files+=("$config")
+    write_golangci_config "$config"
 
-            # Add forbidigo unless skipped
-            if [[ "$SKIP_FORBIDIGO" != "yes" ]];
-            then
-                enabled="$enabled,forbidigo"
-            fi
+    # --enable and --disable come from env vars rather than the config
+    ./bin/golangci-lint $GOLANGCI_FLAGS run --config="$config" $fix_flag "--enable=$enabled" "--disable=$disabled" --verbose --timeout=5m $GOLANGCI_TAGS
 
-            # Create config file in the project directory so golangci-lint v2
-            # resolves file paths relative to the project root, not the config location.
-            configFilepath=".golangci-lint-generated.yml"
-            generated_files+=("$configFilepath")
+    # Cleanup generated config
+    rm -f "$config"
 
-            cat <<EOF > "$configFilepath"
+    echo "FINISHED golangci-lint checks"
+}
+
+# Write the generated golangci-lint config to $1.
+write_golangci_config() {
+    local config="$1"
+
+    cat <<EOF > "$config"
 version: "2"
 run:
   tests: false
@@ -436,12 +495,12 @@ linters:
         - pattern: .*\.Call.*$
           pkg: reflect
 EOF
-            # Add Moov Financial specific overrides
-            if [[ "$org" == "moovfinancial" ]];
-            then
-                # Prevent UUID direct inspections (including ozzo validators) in
-                # favor of moovfinancial/go-libs/mvalidation
-                cat <<'EOF' >> "$configFilepath"
+    # Add Moov Financial specific overrides
+    if [[ "$org" == "moovfinancial" ]];
+    then
+        # Prevent UUID direct inspections (including ozzo validators) in
+        # favor of moovfinancial/go-libs/mvalidation
+        cat <<'EOF' >> "$config"
         - pattern: .*\.IsUUID
           pkg: github.com/moovfinancial/go-libs/mvalidation
           msg: Update to moovfinancial/go-libs/mvalidation IsID[(id type goes here)]
@@ -449,18 +508,18 @@ EOF
           pkg: github.com/go-ozzo/ozzo-validation/v4/is
           msg: Update to moovfinancial/go-libs/mvalidation IsID[(id type goes here)]
 EOF
-            fi
+    fi
 
-            # Add some specific overrides
-            if [[ "$GOLANGCI_ALLOW_PRINT" != "yes" ]];
-            then
-                echo "        - pattern: ^fmt\.Print.*$" >> "$configFilepath"
-            fi
+    # Add some specific overrides
+    if [[ "$GOLANGCI_ALLOW_PRINT" != "yes" ]];
+    then
+        echo "        - pattern: ^fmt\.Print.*$" >> "$config"
+    fi
 
-            # Enable staticcheck with auto-fixable rules only: all S1* (simplifications)
-            # and a curated subset of QF* (quickfixes). SA* and ST* require manual fixes
-            # but should be considered to be turned on at some point...
-            cat <<EOF >> "$configFilepath"
+    # Enable staticcheck with auto-fixable rules only: all S1* (simplifications)
+    # and a curated subset of QF* (quickfixes). SA* and ST* require manual fixes
+    # but should be considered to be turned on at some point...
+    cat <<EOF >> "$config"
     staticcheck:
       checks:
         - "none"
@@ -471,18 +530,6 @@ EOF
         - "QF1009"
         - "QF1010"
         - "QF1012"
-EOF
-
-            # Build --enable and --disable flags from env vars rather than config
-            GOLANGCI_ENABLE_FLAG="--enable=$enabled"
-
-            disabled="depguard,errcheck"
-            if [[ "$DISABLED_GOLANGCI_LINTERS" != "" ]]; then
-                disabled="$disabled,$DISABLED_GOLANGCI_LINTERS"
-            fi
-            GOLANGCI_DISABLE_FLAG="--disable=$disabled"
-
-            cat <<EOF >> "$configFilepath"
   exclusions:
     generated: lax
     presets:
@@ -495,133 +542,130 @@ EOF
       - client
       - pkg/test/fixtures
 EOF
-            if [[ "$GOLANGCI_SKIP_DIR" != "" ]];
-            then
-                echo "      - $GOLANGCI_SKIP_DIR" >> "$configFilepath"
-            fi
-            if [[ "$GOLANGCI_SKIP_FILES" != "" ]];
-            then
-                echo "      - $GOLANGCI_SKIP_FILES" >> "$configFilepath"
-            fi
+    if [[ "$GOLANGCI_SKIP_DIR" != "" ]];
+    then
+        echo "      - $GOLANGCI_SKIP_DIR" >> "$config"
+    fi
+    if [[ "$GOLANGCI_SKIP_FILES" != "" ]];
+    then
+        echo "      - $GOLANGCI_SKIP_FILES" >> "$config"
+    fi
 
-            # forbidigo requires broader path exclusions than other linters; use
-            # linter-specific exclusion rules (supported since golangci-lint v2).
-            cat <<EOF >> "$configFilepath"
+    # forbidigo requires broader path exclusions than other linters; use
+    # linter-specific exclusion rules (supported since golangci-lint v2).
+    cat <<EOF >> "$config"
     rules:
       - linters: [forbidigo]
         path: '^(main\.go|cmd/|docs/|examples/|scripts/)'
 EOF
+}
 
-            ./bin/golangci-lint $GOLANGCI_FLAGS run --config="$configFilepath" $GOLANGCI_FIX_FLAG $GOLANGCI_ENABLE_FLAG $GOLANGCI_DISABLE_FLAG --verbose --timeout=5m $GOLANGCI_TAGS
+# ---------------------------------------------------------------------------
+# Tests and coverage
+# ---------------------------------------------------------------------------
 
-            # Cleanup generated config
-            rm -f "$configFilepath"
+# Run 'go test' for the module. Sets the globals read by run_submodule_tests
+# and check_coverage_threshold: GOTEST, gotest_packages, coveragePath,
+# coveredStatements, maximumCoverage.
+run_tests() {
+    local pkg dir coverage
+
+    if [[ "$VENDOR_FOR_TESTS" == "yes" ]];
+    then
+        echo "Vendoring deps before running tests"
+        go mod tidy
+        go mod vendor
+    fi
+
+    ## Clear GOARCH and GOOS for testing...
+    GOARCH=''
+    GOOS=''
+
+    gotest_packages="./..."
+    if [ -n "$GOTEST_PKGS" ];
+    then
+        gotest_packages="$GOTEST_PKGS"
+    fi
+
+    coveredStatements=0
+    maximumCoverage=0
+    coveragePath=$(mktemp -d)"/coverage.txt"
+
+    # Find "gotest" or "go test"
+    GOTEST=$(command -v go)" test"
+    if command -v gotest > /dev/null 2>&1;
+    then
+        GOTEST=$(command -v gotest)
+    fi
+
+    echo "======"
+
+    # Run 'go test'
+    if [[ "$OS_NAME" == "windows" ]]; then
+        # Just run short tests on Windows as we don't have Docker support in tests worked out for the database tests
+        echo "Running $GOTEST on $OS_NAME with extra flags: $GOTEST_FLAGS"
+        $GOTEST $GOTAGS "$gotest_packages" "$GORACE" -short -coverprofile="$coveragePath" -covermode=atomic $GOTEST_FLAGS
+    fi
+    # Add some default flags to every 'go test' case
+    if [[ "$GOTEST_FLAGS" == "" ]]; then
+        # Enable test shuffling
+        if [[ "$EXPERIMENTAL" == *"shuffle"* ]]; then
+            GOTEST_FLAGS="$GOTEST_FLAGS -test.shuffle=on"
         fi
 
-        echo "FINISHED golangci-lint checks"
-    fi
-fi
-
-if [[ "$SKIP_TESTS" == "yes" ]];
-then
-    echo "SKIPPING Go tests from env var"
-    exit 0;
-fi
-
-if [[ "$VENDOR_FOR_TESTS" == "yes" ]];
-then
-    echo "Vendoring deps before running tests"
-    go mod tidy
-    go mod vendor
-fi
-
-## Clear GOARCH and GOOS for testing...
-GOARCH=''
-GOOS=''
-
-gotest_packages="./..."
-if [ -n "$GOTEST_PKGS" ];
-then
-    gotest_packages="$GOTEST_PKGS"
-fi
-
-coveredStatements=0
-maximumCoverage=0
-coveragePath=$(mktemp -d)"/coverage.txt"
-
-# Find "gotest" or "go test"
-GOTEST=$(command -v go)" test"
-if command -v gotest > /dev/null 2>&1;
-then
-    GOTEST=$(command -v gotest)
-fi
-
-echo "======"
-
-# Run 'go test'
-if [[ "$OS_NAME" == "windows" ]]; then
-    # Just run short tests on Windows as we don't have Docker support in tests worked out for the database tests
-    echo "Running $GOTEST on $OS_NAME with extra flags: $GOTEST_FLAGS"
-    $GOTEST $GOTAGS "$gotest_packages" "$GORACE" -short -coverprofile="$coveragePath" -covermode=atomic $GOTEST_FLAGS
-fi
-# Add some default flags to every 'go test' case
-if [[ "$GOTEST_FLAGS" == "" ]]; then
-    # Enable test shuffling
-    if [[ "$EXPERIMENTAL" == *"shuffle"* ]]; then
-        GOTEST_FLAGS="$GOTEST_FLAGS -test.shuffle=on"
-    fi
-
-    # Enable -parallel
-    if [[ "$EXPERIMENTAL" == *"parallel"* || "$GOTEST_PARALLEL" != "" ]]; then
-        if [[ "$GOTEST_PARALLEL" == "" ]]; then
-            GOTEST_PARALLEL=8
+        # Enable -parallel
+        if [[ "$EXPERIMENTAL" == *"parallel"* || "$GOTEST_PARALLEL" != "" ]]; then
+            if [[ "$GOTEST_PARALLEL" == "" ]]; then
+                GOTEST_PARALLEL=8
+            fi
+            GOTEST_FLAGS="$GOTEST_FLAGS -parallel=$GOTEST_PARALLEL"
         fi
-        GOTEST_FLAGS="$GOTEST_FLAGS -parallel=$GOTEST_PARALLEL"
     fi
-fi
-if [[ "$OS_NAME" != "windows" ]]; then
-    if [[ "$COVER_THRESHOLD" == "disabled" ]]; then
-        echo "Running $GOTEST on $OS_NAME with coverage disabled and extra flags: $GOTEST_FLAGS"
-        $GOTEST $GOTAGS "$gotest_packages" "$GORACE" -count 1 $GOTEST_FLAGS
-    else
-        # Optionally profile each package
-        if [[ "$PROFILE_GOTEST" == "yes" ]]; then
-            echo "Running $GOTEST on $OS_NAME package by package and extra flags: $GOTEST_FLAGS"
-
-            for pkg in "${GOPKGS[@]}"
-            do
-                # fixup the sub-package for writing cpu/mem profile
-                dir=${pkg#"$MODNAME"/}
-                if [[ "$pkg" == "$dir" ]];
-                then
-                    dir="."
-                fi
-
-                $GOTEST $GOTAGS "$pkg" "$GORACE" \
-                   -covermode=atomic \
-                   -coverprofile="$dir"/coverage.txt \
-                   -test.cpuprofile="$dir"/cpu.out \
-                   -test.memprofile="$dir"/mem.out \
-                   -count 1 $GOTEST_FLAGS
-
-                coverage=$(go tool cover -func="$dir"/coverage.txt | grep total | grep -Eo '[0-9]+\.[0-9]+')
-                if (( $(echo "$coverage > 0" | bc -l) ));
-                then
-                    coveredStatements=$(echo "$coveredStatements" + "$coverage" | bc)
-                    maximumCoverage=$((maximumCoverage+100))
-                fi
-            done
+    if [[ "$OS_NAME" != "windows" ]]; then
+        if [[ "$COVER_THRESHOLD" == "disabled" ]]; then
+            echo "Running $GOTEST on $OS_NAME with coverage disabled and extra flags: $GOTEST_FLAGS"
+            $GOTEST $GOTAGS "$gotest_packages" "$GORACE" -count 1 $GOTEST_FLAGS
         else
-            # Otherwise just run Go tests with coverage
-            echo "Running $GOTEST on $OS_NAME with coverage and extra flags: $GOTEST_FLAGS"
-            $GOTEST $GOTAGS "$gotest_packages" "$GORACE" -coverprofile="$coveragePath" -covermode=atomic -count 1 $GOTEST_FLAGS
+            # Optionally profile each package
+            if [[ "$PROFILE_GOTEST" == "yes" ]]; then
+                echo "Running $GOTEST on $OS_NAME package by package and extra flags: $GOTEST_FLAGS"
+
+                for pkg in "${GOPKGS[@]}"
+                do
+                    # fixup the sub-package for writing cpu/mem profile
+                    dir=${pkg#"$MODNAME"/}
+                    if [[ "$pkg" == "$dir" ]];
+                    then
+                        dir="."
+                    fi
+
+                    $GOTEST $GOTAGS "$pkg" "$GORACE" \
+                       -covermode=atomic \
+                       -coverprofile="$dir"/coverage.txt \
+                       -test.cpuprofile="$dir"/cpu.out \
+                       -test.memprofile="$dir"/mem.out \
+                       -count 1 $GOTEST_FLAGS
+
+                    coverage=$(go tool cover -func="$dir"/coverage.txt | grep total | grep -Eo '[0-9]+\.[0-9]+')
+                    if (( $(echo "$coverage > 0" | bc -l) ));
+                    then
+                        coveredStatements=$(echo "$coveredStatements" + "$coverage" | bc)
+                        maximumCoverage=$((maximumCoverage+100))
+                    fi
+                done
+            else
+                # Otherwise just run Go tests with coverage
+                echo "Running $GOTEST on $OS_NAME with coverage and extra flags: $GOTEST_FLAGS"
+                $GOTEST $GOTAGS "$gotest_packages" "$GORACE" -coverprofile="$coveragePath" -covermode=atomic -count 1 $GOTEST_FLAGS
+            fi
         fi
     fi
-fi
+}
 
-# Run Go Tests on submodules
-if [[ "$SKIP_SUBMODULE_TESTS" == "" ]];
-then
+# Run Go tests in every nested module (directories with their own go.mod).
+run_submodule_tests() {
+    local submodules mod_file dir
+
     submodules=$(find . -mindepth 2 -name go.mod)
     if [ -n "$submodules" ]; then
         echo "Testing Submodules..."
@@ -631,10 +675,12 @@ then
             (cd "$dir" && $GOTEST $GOTAGS "$gotest_packages" "$GORACE")
         done
     fi
-fi
+}
 
-# Verify Code Coverage Threshold
-if [[ "$COVER_THRESHOLD" != "" && "$COVER_THRESHOLD" != "disabled" ]]; then
+# Fail if statement coverage is below COVER_THRESHOLD.
+check_coverage_threshold() {
+    local avgCoverage
+
     if [[ -f "$coveragePath" && "$PROFILE_GOTEST" != "yes" ]];
     then
         # Ignore test directories in coverage analysis
@@ -652,8 +698,50 @@ if [[ "$COVER_THRESHOLD" != "" && "$COVER_THRESHOLD" != "disabled" ]]; then
     else
         echo "SUCCESS: project has sufficient statement coverage (over $COVER_THRESHOLD%)"
     fi
-else
-    echo "Skipping code coverage threshold, consider setting COVER_THRESHOLD. (Example: 85.0)"
-fi
+}
 
-echo "finished running Go tests"
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+# Files created by this script that must not be left behind in the project,
+# even when a check fails and set -e exits early.
+generated_files=()
+cleanup() {
+    if [[ ${#generated_files[@]} -gt 0 ]]; then
+        rm -f "${generated_files[@]}"
+    fi
+}
+
+# Download a release tarball containing a single binary named $name and
+# place it at ./bin/$name.
+download_tool() {
+    local name="$1" url="$2"
+
+    wget -q -O "$name.tar.gz" "$url"
+    tar xf "$name.tar.gz" "$name"
+    mv "$name" "./bin/$name"
+    rm -f "$name.tar.gz"
+}
+
+# Print the path of a Go tool that was just installed with 'go install': the
+# binary in GOBIN (or GOPATH/bin when GOBIN is unset), which is not always on
+# PATH, falling back to whatever PATH provides. Prints nothing if the tool
+# cannot be found.
+find_go_tool() {
+    local name="$1" install_dir gopath
+
+    install_dir=$(go env GOBIN)
+    if [[ -z "$install_dir" ]]; then
+        gopath=$(go env GOPATH)
+        install_dir="${gopath%%:*}/bin"
+    fi
+
+    if [[ -x "$install_dir/$name" ]]; then
+        echo "$install_dir/$name"
+    elif command -v "$name" > /dev/null 2>&1; then
+        command -v "$name"
+    fi
+}
+
+main "$@"
